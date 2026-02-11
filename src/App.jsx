@@ -172,7 +172,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(USER_ROUTES_KEY, JSON.stringify(localRoutes));
+    try {
+      localStorage.setItem(USER_ROUTES_KEY, JSON.stringify(localRoutes));
+    } catch (error) {
+      setWalkError('Unable to save personal routes (storage limit reached).');
+    }
   }, [localRoutes]);
 
   const collectedSet = useMemo(() => new Set(collectedIds), [collectedIds]);
@@ -325,6 +329,24 @@ export default function App() {
       reader.readAsDataURL(file);
     });
 
+  const downscaleDataUrl = (dataUrl, maxDim = 1200, quality = 0.82) =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const width = Math.max(1, Math.floor(img.width * scale));
+        const height = Math.max(1, Math.floor(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = () => reject(new Error('Failed to process image.'));
+      img.src = dataUrl;
+    });
+
   const sliceImage = (dataUrl, cols, rows) =>
     new Promise((resolve, reject) => {
       const img = new Image();
@@ -410,11 +432,12 @@ export default function App() {
     if (!file) return;
     try {
       const dataUrl = await loadImage(file);
-      setPuzzleImageUrl(dataUrl);
+      const optimizedDataUrl = await downscaleDataUrl(dataUrl);
+      setPuzzleImageUrl(optimizedDataUrl);
       const { cols, rows } = computeGrid(pieces.length);
       setGridCols(cols);
       setGridRows(rows);
-      const fragments = await sliceImage(dataUrl, cols, rows);
+      const fragments = await sliceImage(optimizedDataUrl, cols, rows);
       applyImageFragments(fragments);
     } catch (err) {
       alert(err.message);
@@ -549,6 +572,15 @@ export default function App() {
         (localRoute.pieces ?? []).map((piece) => piece.id)
       );
       setCollectedIds(nextCollected);
+      const hasFragments = (localRoute.pieces ?? []).some((piece) => piece.imageFragmentUrl);
+      if (!hasFragments && localRoute.puzzleImageUrl && (localRoute.pieces ?? []).length) {
+        const { cols, rows } = computeGrid((localRoute.pieces ?? []).length);
+        setGridCols(cols);
+        setGridRows(rows);
+        sliceImage(localRoute.puzzleImageUrl, cols, rows)
+          .then(applyImageFragments)
+          .catch((error) => setWalkError(error.message));
+      }
       setSelectedRouteId(routeId);
       localStorage.setItem(LAST_ROUTE_KEY, routeId);
       return;
@@ -636,11 +668,15 @@ export default function App() {
       alert(`You can save up to ${USER_ROUTE_LIMIT} personal routes.`);
       return;
     }
+    const lightweightPieces = pieces.map((piece) => ({
+      ...piece,
+      imageFragmentUrl: ''
+    }));
     const snapshot = {
       id: routeId,
       name: route.name || 'My Route',
       route: { ...route, id: routeId },
-      pieces,
+      pieces: lightweightPieces,
       puzzleImageUrl,
       gridCols,
       gridRows,
@@ -682,7 +718,7 @@ export default function App() {
     const bootstrapWalkMode = async () => {
       await loadRoutesList();
       const lastRouteId = localStorage.getItem(LAST_ROUTE_KEY);
-      if (active && lastRouteId && isUuid(lastRouteId)) {
+      if (active && lastRouteId && (isUuid(lastRouteId) || isLocalRouteId(lastRouteId))) {
         await loadRoute(lastRouteId);
       }
     };
