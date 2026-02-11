@@ -949,6 +949,40 @@ export default function App() {
                       onChange={(e) => setRoute({ ...route, name: e.target.value })}
                     />
                   </label>
+                  <div className="puzzle-admin">
+                    <p>My Route Puzzle Image</p>
+                    <div className="inline-actions">
+                      <span>
+                        Grid: {gridCols} x {gridRows}
+                      </span>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={resliceFromPieceCount}
+                        disabled={!puzzleImageUrl || !pieces.length}
+                      >
+                        Reslice From Pieces
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => setPuzzleImageUrl('')}
+                        disabled={!puzzleImageUrl}
+                      >
+                        Remove Image
+                      </button>
+                    </div>
+                    <input type="file" accept="image/*" onChange={handlePuzzleUpload} />
+                    {pieces.length !== gridCols * gridRows && (
+                      <small>
+                        Pieces count ({pieces.length}) does not match grid size (
+                        {gridCols * gridRows}). Add/remove pieces or reslice.
+                      </small>
+                    )}
+                    {puzzleImageUrl && (
+                      <img className="puzzle-thumb" src={puzzleImageUrl} alt="Puzzle" />
+                    )}
+                  </div>
                   <div className="latlng-readout">
                     <span>
                       Last tap:{' '}
