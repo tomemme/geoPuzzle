@@ -108,7 +108,12 @@ export default function App() {
   const [gridRows, setGridRows] = useState(3);
   const [deviceId, setDeviceId] = useState('');
   const [walkBusy, setWalkBusy] = useState(false);
+  const [walkActive, setWalkActive] = useState(false);
+  const [walkStartedAt, setWalkStartedAt] = useState(null);
+  const [walkElapsedSec, setWalkElapsedSec] = useState(0);
+  const [walkDistanceM, setWalkDistanceM] = useState(0);
   const lastSliceRef = useRef('');
+  const lastTrackPosRef = useRef(null);
 
   useEffect(() => {
     return () => {
@@ -167,6 +172,25 @@ export default function App() {
   const remaining = orderedPieces.filter((p) => !collectedSet.has(p.id));
 
   const allCollected = pieces.length > 0 && collectedIds.length === pieces.length;
+  const estimatedSteps = Math.max(0, Math.round(walkDistanceM / 0.75));
+
+  const formatDuration = (totalSec) => {
+    const minutes = Math.floor(totalSec / 60)
+      .toString()
+      .padStart(2, '0');
+    const seconds = Math.floor(totalSec % 60)
+      .toString()
+      .padStart(2, '0');
+    return `${minutes}:${seconds}`;
+  };
+
+  useEffect(() => {
+    if (!walkActive || !walkStartedAt) return undefined;
+    const intervalId = window.setInterval(() => {
+      setWalkElapsedSec(Math.floor((Date.now() - walkStartedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [walkActive, walkStartedAt]);
 
   const startWalk = () => {
     if (!selectedRouteId) {
@@ -178,9 +202,20 @@ export default function App() {
       return;
     }
     if (watchIdRef.current !== null) return;
+    const startedAt = Date.now();
+    setWalkActive(true);
+    setWalkStartedAt(startedAt);
+    setWalkElapsedSec(0);
+    setWalkDistanceM(0);
+    lastTrackPosRef.current = null;
     watchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
         const nextPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        if (lastTrackPosRef.current) {
+          const segmentMeters = haversineMeters(lastTrackPosRef.current, nextPos);
+          setWalkDistanceM((prev) => prev + segmentMeters);
+        }
+        lastTrackPosRef.current = nextPos;
         setUserPos(nextPos);
         const newlyCollected = remaining
           .filter((piece) => haversineMeters(nextPos, piece) <= collectionRadius)
@@ -206,6 +241,11 @@ export default function App() {
       navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
     }
+    setWalkActive(false);
+    setWalkStartedAt(null);
+    setWalkElapsedSec(0);
+    setWalkDistanceM(0);
+    lastTrackPosRef.current = null;
   };
 
   const addPiece = (point) => {
@@ -682,6 +722,13 @@ export default function App() {
       <section className="controls">
         {mode === 'walk' ? (
           <div className="control-group">
+            {walkActive && (
+              <div className="walk-active-banner">
+                <strong>Walk Session Active</strong>
+                <span>Timer: {formatDuration(walkElapsedSec)}</span>
+                <span>Estimated Steps: {estimatedSteps}</span>
+              </div>
+            )}
             <label>
               Route
               <select
