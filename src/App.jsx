@@ -13,6 +13,7 @@ const DEFAULT_ROUTE = {
 const INITIAL_PIECES = [];
 const DEVICE_ID_KEY = 'geoPuzzle:device-id';
 const LAST_ROUTE_KEY = 'geoPuzzle:last-route-id';
+const AUTO_COLLECT_RADIUS_M = 30;
 
 const userIcon = new L.DivIcon({
   className: 'user-dot',
@@ -89,7 +90,6 @@ export default function App() {
   const [pieces, setPieces] = useState(INITIAL_PIECES);
   const [collectedIds, setCollectedIds] = useState([]);
   const [userPos, setUserPos] = useState(null);
-  const [collectionRadius, setCollectionRadius] = useState(30);
   const [exportText, setExportText] = useState('');
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [deleteMode, setDeleteMode] = useState(false);
@@ -218,7 +218,7 @@ export default function App() {
         lastTrackPosRef.current = nextPos;
         setUserPos(nextPos);
         const newlyCollected = remaining
-          .filter((piece) => haversineMeters(nextPos, piece) <= collectionRadius)
+          .filter((piece) => haversineMeters(nextPos, piece) <= AUTO_COLLECT_RADIUS_M)
           .map((piece) => piece.id);
         if (newlyCollected.length) {
           setCollectedIds((prev) => [...new Set([...prev, ...newlyCollected])]);
@@ -651,7 +651,7 @@ export default function App() {
         </div>
         <div className="status-card">
           <span>Auto-Collect Radius</span>
-          <strong>{collectionRadius} m</strong>
+          <strong>{AUTO_COLLECT_RADIUS_M} m</strong>
         </div>
         <div className="status-card">
           <span>Privacy</span>
@@ -758,16 +758,6 @@ export default function App() {
               Reset Progress
             </button>
             {walkError && <small>{walkError}</small>}
-            <label>
-              Radius (m)
-              <input
-                type="number"
-                min={10}
-                max={100}
-                value={collectionRadius}
-                onChange={(e) => setCollectionRadius(Number(e.target.value))}
-              />
-            </label>
             {orderedPieces.some((p) => p.imageFragmentUrl) && (
               <div
                 className="puzzle-grid"
