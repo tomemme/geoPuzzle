@@ -5,27 +5,14 @@ import { supabase } from './lib/supabase.js';
 
 const DEFAULT_ROUTE = {
   id: 'route-1',
-  name: 'Neighborhood Loop',
+  name: 'Select a Route',
   center: { lat: 37.7749, lng: -122.4194 },
   radiusM: 800
 };
 
-const INITIAL_PIECES = [
-  {
-    id: 'piece-1',
-    lat: 37.7758,
-    lng: -122.4172,
-    order: 1,
-    imageFragmentUrl: ''
-  },
-  {
-    id: 'piece-2',
-    lat: 37.7739,
-    lng: -122.4211,
-    order: 2,
-    imageFragmentUrl: ''
-  }
-];
+const INITIAL_PIECES = [];
+const DEVICE_ID_KEY = 'geoPuzzle:device-id';
+const LAST_ROUTE_KEY = 'geoPuzzle:last-route-id';
 
 const userIcon = new L.DivIcon({
   className: 'user-dot',
@@ -90,6 +77,12 @@ function MapCenterUpdater({ center, zoom = 16 }) {
   return null;
 }
 
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value || ''
+  );
+}
+
 export default function App() {
   const [mode, setMode] = useState('walk');
   const [route, setRoute] = useState(DEFAULT_ROUTE);
@@ -108,29 +101,14 @@ export default function App() {
   const [authPassword, setAuthPassword] = useState('');
   const [authUser, setAuthUser] = useState(null);
   const [adminError, setAdminError] = useState('');
+  const [walkError, setWalkError] = useState('');
   const [adminBusy, setAdminBusy] = useState(false);
   const [puzzleImageUrl, setPuzzleImageUrl] = useState('');
   const [gridCols, setGridCols] = useState(3);
   const [gridRows, setGridRows] = useState(3);
+  const [deviceId, setDeviceId] = useState('');
+  const [walkBusy, setWalkBusy] = useState(false);
   const lastSliceRef = useRef('');
-
-  const storageKey = useMemo(() => `geoPuzzle:collected:${route.id}`, [route.id]);
-
-  useEffect(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) setCollectedIds(parsed);
-      } catch (err) {
-        console.error('Failed to parse saved progress', err);
-      }
-    }
-  }, [storageKey]);
-
-  useEffect(() => {
-    localStorage.setItem(storageKey, JSON.stringify(collectedIds));
-  }, [storageKey, collectedIds]);
 
   useEffect(() => {
     return () => {
@@ -160,10 +138,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (adminUnlocked) {
-      loadRoutesList();
+    const existing = localStorage.getItem(DEVICE_ID_KEY);
+    if (existing) {
+      setDeviceId(existing);
+      return;
     }
-  }, [adminUnlocked]);
+    const nextId = crypto.randomUUID();
+    localStorage.setItem(DEVICE_ID_KEY, nextId);
+    setDeviceId(nextId);
+  }, []);
 
   const collectedSet = useMemo(() => new Set(collectedIds), [collectedIds]);
   const orderedPieces = useMemo(
@@ -186,6 +169,10 @@ export default function App() {
   const allCollected = pieces.length > 0 && collectedIds.length === pieces.length;
 
   const startWalk = () => {
+    if (!selectedRouteId) {
+      alert('Select a route first.');
+      return;
+    }
     if (!navigator.geolocation) {
       alert('Geolocation is not supported on this device.');
       return;
@@ -222,11 +209,10 @@ export default function App() {
   };
 
   const addPiece = (point) => {
-    const nextId = `piece-${pieces.length + 1}`;
     setPieces((prev) => [
       ...prev,
       {
-        id: nextId,
+        id: crypto.randomUUID(),
         lat: point.lat,
         lng: point.lng,
         order: prev.length + 1,
@@ -365,7 +351,31 @@ export default function App() {
     }
   };
 
-  const resetProgress = () => setCollectedIds([]);
+  const saveProgress = async (nextCollectedIds) => {
+    if (!deviceId || !isUuid(route.id) || route.id !== selectedRouteId) return;
+    const validIds = nextCollectedIds.filter((id) => isUuid(id));
+    const now = new Date().toISOString();
+    const completedAt =
+      pieces.length > 0 && validIds.length === pieces.length ? now : null;
+    const { error } = await supabase.from('progress').upsert(
+      {
+        route_id: route.id,
+        device_id: deviceId,
+        collected_piece_ids: validIds,
+        completed_at: completedAt,
+        updated_at: now
+      },
+      { onConflict: 'route_id,device_id' }
+    );
+    if (error) {
+      setWalkError(error.message);
+    }
+  };
+
+  const resetProgress = async () => {
+    setCollectedIds([]);
+    await saveProgress([]);
+  };
 
   const signInAdmin = async (event) => {
     event.preventDefault();
@@ -393,21 +403,44 @@ export default function App() {
       .select('id, name, created_at')
       .order('created_at', { ascending: false });
     if (error) {
+      setWalkError(error.message);
       setAdminError(error.message);
       return;
     }
     setRoutesList(data ?? []);
   };
 
+  const loadProgress = async (routeId, pieceIds) => {
+    if (!routeId || !deviceId || !isUuid(routeId)) return;
+    const { data, error } = await supabase
+      .from('progress')
+      .select('collected_piece_ids')
+      .eq('route_id', routeId)
+      .eq('device_id', deviceId)
+      .maybeSingle();
+    if (error) {
+      setWalkError(error.message);
+      setAdminError(error.message);
+      return;
+    }
+    const validSet = new Set(pieceIds);
+    const nextCollected = (data?.collected_piece_ids ?? []).filter((id) => validSet.has(id));
+    setCollectedIds(nextCollected);
+  };
+
   const loadRoute = async (routeId) => {
     if (!routeId) return;
+    setWalkBusy(true);
+    setWalkError('');
     const { data: routeData, error: routeError } = await supabase
       .from('routes')
       .select('*')
       .eq('id', routeId)
       .single();
     if (routeError) {
+      setWalkError(routeError.message);
       setAdminError(routeError.message);
+      setWalkBusy(false);
       return;
     }
     const { data: pieceData, error: pieceError } = await supabase
@@ -416,10 +449,19 @@ export default function App() {
       .eq('route_id', routeId)
       .order('piece_order', { ascending: true });
     if (pieceError) {
+      setWalkError(pieceError.message);
       setAdminError(pieceError.message);
+      setWalkBusy(false);
       return;
     }
     const hasFragments = (pieceData ?? []).some((piece) => piece.image_fragment_url);
+    const normalizedPieces = (pieceData ?? []).map((piece) => ({
+      id: piece.id,
+      lat: piece.lat,
+      lng: piece.lng,
+      order: piece.piece_order,
+      imageFragmentUrl: piece.image_fragment_url ?? ''
+    }));
     setRoute({
       id: routeData.id,
       name: routeData.name,
@@ -429,28 +471,44 @@ export default function App() {
     setPuzzleImageUrl(routeData.puzzle_image_url ?? '');
     setGridCols(routeData.grid_cols ?? 3);
     setGridRows(routeData.grid_rows ?? 3);
-    setPieces(
-      (pieceData ?? []).map((piece) => ({
-        id: piece.id,
-        lat: piece.lat,
-        lng: piece.lng,
-        order: piece.piece_order,
-        imageFragmentUrl: piece.image_fragment_url ?? ''
-      }))
-    );
+    setPieces(normalizedPieces);
     if (!hasFragments && routeData.puzzle_image_url) {
       try {
         const { cols, rows } = computeGrid(pieceData?.length ?? 1);
         const fragments = await sliceImage(routeData.puzzle_image_url, cols, rows);
         applyImageFragments(fragments);
       } catch (err) {
+        setWalkError(err.message);
         setAdminError(err.message);
       }
     }
-    setCollectedIds([]);
+    await loadProgress(routeId, normalizedPieces.map((piece) => piece.id));
     setSelectedRouteId(routeId);
+    localStorage.setItem(LAST_ROUTE_KEY, routeId);
+    setWalkBusy(false);
     // Map recenters via MapCenterUpdater when route center changes.
   };
+
+  useEffect(() => {
+    if (!deviceId) return;
+    let active = true;
+    const bootstrapWalkMode = async () => {
+      await loadRoutesList();
+      const lastRouteId = localStorage.getItem(LAST_ROUTE_KEY);
+      if (active && lastRouteId && isUuid(lastRouteId)) {
+        await loadRoute(lastRouteId);
+      }
+    };
+    bootstrapWalkMode();
+    return () => {
+      active = false;
+    };
+  }, [deviceId]);
+
+  useEffect(() => {
+    if (!deviceId || !isUuid(route.id) || route.id !== selectedRouteId) return;
+    saveProgress(collectedIds);
+  }, [collectedIds, deviceId, route.id, selectedRouteId, pieces.length]);
 
   const saveRoute = async () => {
     if (!adminUnlocked) {
@@ -624,6 +682,27 @@ export default function App() {
       <section className="controls">
         {mode === 'walk' ? (
           <div className="control-group">
+            <label>
+              Route
+              <select
+                value={selectedRouteId}
+                onChange={(e) => loadRoute(e.target.value)}
+                disabled={walkBusy}
+              >
+                <option value="">Select a route</option>
+                {routesList.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="inline-actions">
+              <button type="button" onClick={loadRoutesList} className="ghost">
+                Refresh Routes
+              </button>
+              {walkBusy && <span>Loading route...</span>}
+            </div>
             <button onClick={startWalk}>Start Walk</button>
             <button onClick={stopWalk} className="ghost">
               Stop
@@ -631,6 +710,7 @@ export default function App() {
             <button onClick={resetProgress} className="ghost">
               Reset Progress
             </button>
+            {walkError && <small>{walkError}</small>}
             <label>
               Radius (m)
               <input
