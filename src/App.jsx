@@ -14,6 +14,9 @@ const INITIAL_PIECES = [];
 const DEVICE_ID_KEY = 'geoPuzzle:device-id';
 const LAST_ROUTE_KEY = 'geoPuzzle:last-route-id';
 const AUTO_COLLECT_RADIUS_M = 30;
+const USER_ROUTES_KEY = 'geoPuzzle:user-routes';
+const USER_ROUTE_LIMIT = 3;
+const USER_ROUTE_PREFIX = 'local-';
 
 const userIcon = new L.DivIcon({
   className: 'user-dot',
@@ -108,6 +111,9 @@ export default function App() {
   const [gridRows, setGridRows] = useState(3);
   const [deviceId, setDeviceId] = useState('');
   const [walkBusy, setWalkBusy] = useState(false);
+  const [localRoutes, setLocalRoutes] = useState([]);
+  const [localBuilderOn, setLocalBuilderOn] = useState(false);
+  const [localDeleteMode, setLocalDeleteMode] = useState(false);
   const [walkActive, setWalkActive] = useState(false);
   const [walkStartedAt, setWalkStartedAt] = useState(null);
   const [walkElapsedSec, setWalkElapsedSec] = useState(0);
@@ -153,6 +159,22 @@ export default function App() {
     setDeviceId(nextId);
   }, []);
 
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(USER_ROUTES_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed)) {
+        setLocalRoutes(parsed);
+      }
+    } catch (error) {
+      setLocalRoutes([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(USER_ROUTES_KEY, JSON.stringify(localRoutes));
+  }, [localRoutes]);
+
   const collectedSet = useMemo(() => new Set(collectedIds), [collectedIds]);
   const orderedPieces = useMemo(
     () => [...pieces].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
@@ -170,6 +192,13 @@ export default function App() {
     return map;
   }, [orderedPieces]);
   const remaining = orderedPieces.filter((p) => !collectedSet.has(p.id));
+  const routeOptions = useMemo(
+    () => [
+      ...routesList.map((r) => ({ id: r.id, name: r.name, source: 'shared' })),
+      ...localRoutes.map((r) => ({ id: r.id, name: r.name, source: 'local' }))
+    ],
+    [routesList, localRoutes]
+  );
 
   const allCollected = pieces.length > 0 && collectedIds.length === pieces.length;
   const estimatedSteps = Math.max(0, Math.round(walkDistanceM / 0.75));
@@ -264,6 +293,28 @@ export default function App() {
   const removePiece = (pieceId) => {
     setPieces((prev) => prev.filter((piece) => piece.id !== pieceId));
     setCollectedIds((prev) => prev.filter((id) => id !== pieceId));
+  };
+
+  const isLocalRouteId = (value) => (value || '').startsWith(USER_ROUTE_PREFIX);
+
+  const loadLocalProgress = (routeId, pieceIds) => {
+    if (!deviceId || !routeId) return [];
+    const key = `geoPuzzle:progress:${routeId}:${deviceId}`;
+    try {
+      const raw = localStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(parsed)) return [];
+      const valid = new Set(pieceIds);
+      return parsed.filter((id) => valid.has(id));
+    } catch (error) {
+      return [];
+    }
+  };
+
+  const saveLocalProgress = (routeId, nextCollectedIds) => {
+    if (!deviceId || !routeId) return;
+    const key = `geoPuzzle:progress:${routeId}:${deviceId}`;
+    localStorage.setItem(key, JSON.stringify(nextCollectedIds));
   };
 
   const loadImage = (file) =>
@@ -392,7 +443,12 @@ export default function App() {
   };
 
   const saveProgress = async (nextCollectedIds) => {
-    if (!deviceId || !isUuid(route.id) || route.id !== selectedRouteId) return;
+    if (!deviceId || route.id !== selectedRouteId) return;
+    if (isLocalRouteId(route.id)) {
+      saveLocalProgress(route.id, nextCollectedIds);
+      return;
+    }
+    if (!isUuid(route.id)) return;
     const validIds = nextCollectedIds.filter((id) => isUuid(id));
     const now = new Date().toISOString();
     const completedAt =
@@ -451,7 +507,13 @@ export default function App() {
   };
 
   const loadProgress = async (routeId, pieceIds) => {
-    if (!routeId || !deviceId || !isUuid(routeId)) return;
+    if (!routeId || !deviceId) return;
+    if (isLocalRouteId(routeId)) {
+      const localCollected = loadLocalProgress(routeId, pieceIds);
+      setCollectedIds(localCollected);
+      return;
+    }
+    if (!isUuid(routeId)) return;
     const { data, error } = await supabase
       .from('progress')
       .select('collected_piece_ids')
@@ -470,6 +532,27 @@ export default function App() {
 
   const loadRoute = async (routeId) => {
     if (!routeId) return;
+    if (isLocalRouteId(routeId)) {
+      const localRoute = localRoutes.find((r) => r.id === routeId);
+      if (!localRoute) {
+        setWalkError('Local route not found.');
+        return;
+      }
+      setWalkError('');
+      setRoute(localRoute.route);
+      setPieces(localRoute.pieces ?? []);
+      setPuzzleImageUrl(localRoute.puzzleImageUrl ?? '');
+      setGridCols(localRoute.gridCols ?? 3);
+      setGridRows(localRoute.gridRows ?? 3);
+      const nextCollected = loadLocalProgress(
+        routeId,
+        (localRoute.pieces ?? []).map((piece) => piece.id)
+      );
+      setCollectedIds(nextCollected);
+      setSelectedRouteId(routeId);
+      localStorage.setItem(LAST_ROUTE_KEY, routeId);
+      return;
+    }
     setWalkBusy(true);
     setWalkError('');
     const { data: routeData, error: routeError } = await supabase
@@ -529,6 +612,70 @@ export default function App() {
     // Map recenters via MapCenterUpdater when route center changes.
   };
 
+  const newLocalRoute = () => {
+    const nextRouteId = `${USER_ROUTE_PREFIX}${crypto.randomUUID()}`;
+    setRoute({
+      id: nextRouteId,
+      name: 'My Route',
+      center: { ...route.center },
+      radiusM: route.radiusM
+    });
+    setPieces([]);
+    setCollectedIds([]);
+    setPuzzleImageUrl('');
+    setSelectedRouteId(nextRouteId);
+    setLocalDeleteMode(false);
+  };
+
+  const saveLocalRoute = () => {
+    const routeId = isLocalRouteId(route.id)
+      ? route.id
+      : `${USER_ROUTE_PREFIX}${crypto.randomUUID()}`;
+    const isExisting = localRoutes.some((r) => r.id === routeId);
+    if (!isExisting && localRoutes.length >= USER_ROUTE_LIMIT) {
+      alert(`You can save up to ${USER_ROUTE_LIMIT} personal routes.`);
+      return;
+    }
+    const snapshot = {
+      id: routeId,
+      name: route.name || 'My Route',
+      route: { ...route, id: routeId },
+      pieces,
+      puzzleImageUrl,
+      gridCols,
+      gridRows,
+      updatedAt: new Date().toISOString()
+    };
+    setLocalRoutes((prev) => {
+      if (prev.some((r) => r.id === routeId)) {
+        return prev.map((r) => (r.id === routeId ? snapshot : r));
+      }
+      return [...prev, snapshot];
+    });
+    setRoute((prev) => ({ ...prev, id: routeId }));
+    setSelectedRouteId(routeId);
+    localStorage.setItem(LAST_ROUTE_KEY, routeId);
+  };
+
+  const deleteLocalRoute = () => {
+    if (!isLocalRouteId(route.id)) return;
+    const routeId = route.id;
+    setLocalRoutes((prev) => prev.filter((r) => r.id !== routeId));
+    if (selectedRouteId === routeId) {
+      setSelectedRouteId('');
+      localStorage.removeItem(LAST_ROUTE_KEY);
+    }
+    setRoute(DEFAULT_ROUTE);
+    setPieces([]);
+    setCollectedIds([]);
+    setPuzzleImageUrl('');
+    setGridCols(3);
+    setGridRows(3);
+    if (deviceId) {
+      localStorage.removeItem(`geoPuzzle:progress:${routeId}:${deviceId}`);
+    }
+  };
+
   useEffect(() => {
     if (!deviceId) return;
     let active = true;
@@ -543,10 +690,10 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [deviceId]);
+  }, [deviceId, localRoutes]);
 
   useEffect(() => {
-    if (!deviceId || !isUuid(route.id) || route.id !== selectedRouteId) return;
+    if (!deviceId || !route.id || route.id !== selectedRouteId) return;
     saveProgress(collectedIds);
   }, [collectedIds, deviceId, route.id, selectedRouteId, pieces.length]);
 
@@ -650,10 +797,6 @@ export default function App() {
           </strong>
         </div>
         <div className="status-card">
-          <span>Auto-Collect Radius</span>
-          <strong>{AUTO_COLLECT_RADIUS_M} m</strong>
-        </div>
-        <div className="status-card">
           <span>Privacy</span>
           <strong>No location logs</strong>
         </div>
@@ -676,9 +819,15 @@ export default function App() {
             pathOptions={{ color: '#f1c27d', fillOpacity: 0.08 }}
           />
           <MapClickHandler
-            enabled={mode === 'admin' && adminUnlocked}
+            enabled={
+              (mode === 'admin' && adminUnlocked) || (mode === 'walk' && localBuilderOn)
+            }
             onClick={setLastClick}
-            onAdd={deleteMode ? null : addPiece}
+            onAdd={
+              (mode === 'admin' && deleteMode) || (mode === 'walk' && localDeleteMode)
+                ? null
+                : addPiece
+            }
           />
           {orderedPieces.map((piece) => (
             <Marker
@@ -687,7 +836,10 @@ export default function App() {
               icon={thumbIcons.get(piece.id) ?? pieceIcon}
               eventHandlers={{
                 click: () => {
-                  if (mode === 'admin' && adminUnlocked && deleteMode) {
+                  if (
+                    (mode === 'admin' && adminUnlocked && deleteMode) ||
+                    (mode === 'walk' && localBuilderOn && localDeleteMode)
+                  ) {
                     removePiece(piece.id);
                   }
                 }
@@ -696,7 +848,8 @@ export default function App() {
               <Popup>
                 <strong>Piece {piece.order}</strong>
                 <div>{piece.id}</div>
-                {mode === 'admin' && adminUnlocked && (
+                {((mode === 'admin' && adminUnlocked) ||
+                  (mode === 'walk' && localBuilderOn)) && (
                   <button
                     className="popup-delete"
                     onClick={(e) => {
@@ -737,9 +890,10 @@ export default function App() {
                 disabled={walkBusy}
               >
                 <option value="">Select a route</option>
-                {routesList.map((r) => (
+                {routeOptions.map((r) => (
                   <option key={r.id} value={r.id}>
                     {r.name}
+                    {r.source === 'local' ? ' (My Route)' : ''}
                   </option>
                 ))}
               </select>
@@ -749,6 +903,70 @@ export default function App() {
                 Refresh Routes
               </button>
               {walkBusy && <span>Loading route...</span>}
+            </div>
+            <div className="route-builder-card">
+              <div className="inline-actions">
+                <button
+                  type="button"
+                  className={localBuilderOn ? 'danger' : 'ghost'}
+                  onClick={() => setLocalBuilderOn((prev) => !prev)}
+                >
+                  {localBuilderOn ? 'My Route Builder: On' : 'My Route Builder: Off'}
+                </button>
+                <span>Saved personal routes: {localRoutes.length} / {USER_ROUTE_LIMIT}</span>
+              </div>
+              {localBuilderOn && (
+                <>
+                  <p>Tap map to place pieces for your personal route.</p>
+                  <div className="inline-actions">
+                    <button type="button" className="ghost" onClick={newLocalRoute}>
+                      New My Route
+                    </button>
+                    <button type="button" onClick={saveLocalRoute}>
+                      Save My Route
+                    </button>
+                    <button
+                      type="button"
+                      className={localDeleteMode ? 'danger' : 'ghost'}
+                      onClick={() => setLocalDeleteMode((prev) => !prev)}
+                    >
+                      {localDeleteMode ? 'Delete Mode: On' : 'Delete Mode: Off'}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={deleteLocalRoute}
+                      disabled={!isLocalRouteId(route.id)}
+                    >
+                      Delete This My Route
+                    </button>
+                  </div>
+                  <label>
+                    My Route Name
+                    <input
+                      type="text"
+                      value={route.name}
+                      onChange={(e) => setRoute({ ...route, name: e.target.value })}
+                    />
+                  </label>
+                  <div className="latlng-readout">
+                    <span>
+                      Last tap:{' '}
+                      {lastClick
+                        ? `${lastClick.lat.toFixed(6)}, ${lastClick.lng.toFixed(6)}`
+                        : '—'}
+                    </span>
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={setCenterFromLastClick}
+                      disabled={!lastClick}
+                    >
+                      Set Center From Tap
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
             <button onClick={startWalk}>Start Walk</button>
             <button onClick={stopWalk} className="ghost">

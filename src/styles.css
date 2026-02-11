@@ -211,6 +211,20 @@ body {
   font-size: 0.9rem;
 }
 
+.route-builder-card {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  border-radius: 14px;
+  border: 1px dashed rgba(27, 26, 23, 0.2);
+  background: #fff6e8;
+}
+
+.route-builder-card p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
 .admin-lock {
   display: grid;
   gap: 0.75rem;
