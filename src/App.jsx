@@ -4,13 +4,23 @@ import L from 'leaflet';
 import { supabase } from './lib/supabase.js';
 
 const DEFAULT_ROUTE = {
-  id: 'route-1',
-  name: 'Select a Route',
-  center: { lat: 37.7749, lng: -122.4194 },
-  radiusM: 800
+  id: 'featured-high-line',
+  name: 'The High Line Stroll',
+  center: { lat: 40.7489, lng: -74.0048 },
+  radiusM: 1100
 };
 
-const INITIAL_PIECES = [];
+const INITIAL_PIECES = [
+  { id: 'featured-piece-1', lat: 40.74335, lng: -74.00882, order: 1, imageFragmentUrl: '' },
+  { id: 'featured-piece-2', lat: 40.74432, lng: -74.00796, order: 2, imageFragmentUrl: '' },
+  { id: 'featured-piece-3', lat: 40.74546, lng: -74.00712, order: 3, imageFragmentUrl: '' },
+  { id: 'featured-piece-4', lat: 40.74671, lng: -74.0059, order: 4, imageFragmentUrl: '' },
+  { id: 'featured-piece-5', lat: 40.74792, lng: -74.00481, order: 5, imageFragmentUrl: '' },
+  { id: 'featured-piece-6', lat: 40.74938, lng: -74.00428, order: 6, imageFragmentUrl: '' },
+  { id: 'featured-piece-7', lat: 40.75104, lng: -74.00487, order: 7, imageFragmentUrl: '' },
+  { id: 'featured-piece-8', lat: 40.75283, lng: -74.00595, order: 8, imageFragmentUrl: '' },
+  { id: 'featured-piece-9', lat: 40.75463, lng: -74.00674, order: 9, imageFragmentUrl: '' }
+];
 const DEVICE_ID_KEY = 'geoPuzzle:device-id';
 const LAST_ROUTE_KEY = 'geoPuzzle:last-route-id';
 const AUTO_COLLECT_RADIUS_M = 30;
@@ -198,6 +208,7 @@ export default function App() {
   const remaining = orderedPieces.filter((p) => !collectedSet.has(p.id));
   const routeOptions = useMemo(
     () => [
+      { id: DEFAULT_ROUTE.id, name: DEFAULT_ROUTE.name, source: 'featured' },
       ...routesList.map((r) => ({ id: r.id, name: r.name, source: 'shared' })),
       ...localRoutes.map((r) => ({ id: r.id, name: r.name, source: 'local' }))
     ],
@@ -555,6 +566,18 @@ export default function App() {
 
   const loadRoute = async (routeId) => {
     if (!routeId) return;
+    if (routeId === DEFAULT_ROUTE.id) {
+      setWalkError('');
+      setRoute(DEFAULT_ROUTE);
+      setPieces(INITIAL_PIECES);
+      setPuzzleImageUrl('');
+      setGridCols(3);
+      setGridRows(3);
+      setCollectedIds([]);
+      setSelectedRouteId(routeId);
+      localStorage.setItem(LAST_ROUTE_KEY, routeId);
+      return;
+    }
     if (isLocalRouteId(routeId)) {
       const localRoute = localRoutes.find((r) => r.id === routeId);
       if (!localRoute) {
@@ -698,11 +721,11 @@ export default function App() {
     const routeId = route.id;
     setLocalRoutes((prev) => prev.filter((r) => r.id !== routeId));
     if (selectedRouteId === routeId) {
-      setSelectedRouteId('');
-      localStorage.removeItem(LAST_ROUTE_KEY);
+      setSelectedRouteId(DEFAULT_ROUTE.id);
+      localStorage.setItem(LAST_ROUTE_KEY, DEFAULT_ROUTE.id);
     }
     setRoute(DEFAULT_ROUTE);
-    setPieces([]);
+    setPieces(INITIAL_PIECES);
     setCollectedIds([]);
     setPuzzleImageUrl('');
     setGridCols(3);
@@ -718,9 +741,15 @@ export default function App() {
     const bootstrapWalkMode = async () => {
       await loadRoutesList();
       const lastRouteId = localStorage.getItem(LAST_ROUTE_KEY);
-      if (active && lastRouteId && (isUuid(lastRouteId) || isLocalRouteId(lastRouteId))) {
+      if (!active) return;
+      if (
+        lastRouteId &&
+        (lastRouteId === DEFAULT_ROUTE.id || isUuid(lastRouteId) || isLocalRouteId(lastRouteId))
+      ) {
         await loadRoute(lastRouteId);
+        return;
       }
+      await loadRoute(DEFAULT_ROUTE.id);
     };
     bootstrapWalkMode();
     return () => {
